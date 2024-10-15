@@ -1,27 +1,14 @@
 from flask import Flask, request, jsonify
-from mongoengine import connect, Document, StringField, BooleanField
+from mongoengine import connect
 from mongoengine.errors import ValidationError, DoesNotExist
+from models.model import Todo
 import os
 
 app = Flask(__name__)
 
 # Use environment variable for MongoDB connection string, with fallback to local
 mongodb_uri = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/todoapp')
-print(mongodb_uri)
 connect(host=mongodb_uri)
-
-class Todo(Document):
-    title = StringField(required=True)
-    description = StringField(required=True)
-    completed = BooleanField(default=False)
-
-    def to_dict(self):
-        return {
-            "id": str(self.id),
-            "title": self.title,
-            "description": self.description,
-            "completed": self.completed
-        }
 
 def create_response(success, data, status_code, message=None):
     response = {
@@ -50,7 +37,6 @@ def create_todo():
 
 @app.route('/todos', methods=['GET'])
 def get_todos():
-    print(Todo.objects)
     todos = [todo.to_dict() for todo in Todo.objects]
     return create_response(True, todos, 200, f"{len(todos)} todos retrieved successfully")
 
