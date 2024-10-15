@@ -1,14 +1,27 @@
 from flask import Flask, request, jsonify
-from flask_pymongo import PyMongo
-from bson import ObjectId, errors as bson_errors
+from mongoengine import connect, Document, StringField, BooleanField
+from mongoengine.errors import ValidationError, DoesNotExist
 import os
 
 app = Flask(__name__)
-app.config["MONGO_URI"] = "mongodb://localhost:27017/todoapp"
-mongo = PyMongo(app)
 
-# Assign mongo.db.todos to a variable
-todos_collection = mongo.db.todos
+# Use environment variable for MongoDB connection string, with fallback to local
+mongodb_uri = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/todoapp')
+print(mongodb_uri)
+connect(host=mongodb_uri)
+
+class Todo(Document):
+    title = StringField(required=True)
+    description = StringField(required=True)
+    completed = BooleanField(default=False)
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "title": self.title,
+            "description": self.description,
+            "completed": self.completed
+        }
 
 def create_response(success, data, status_code, message=None):
     response = {
@@ -20,87 +33,66 @@ def create_response(success, data, status_code, message=None):
         response["message"] = message
     return jsonify(response), status_code
 
-# Root route
 @app.route('/')
 def root():
     return create_response(False, None, 404, "Resource not found")
 
-# Create a new todo
 @app.route('/todos', methods=['POST'])
 def create_todo():
     if not request.is_json:
         return create_response(False, None, 400, "Request must be JSON")
 
-    todo = request.json
-    
-    # Validate required fields
-    required_fields = ['title', 'description']
-    if not all(field in todo for field in required_fields):
-        return create_response(False, None, 400, f"Missing required fields. Required fields are: {', '.join(required_fields)}")
-    
-    # Validate data types
-    if not isinstance(todo.get('title'), str) or not isinstance(todo.get('description'), str):
-        return create_response(False, None, 400, "Title and description must be strings")
-    
-    # Set default value for 'completed' if not provided
-    if 'completed' not in todo:
-        todo['completed'] = False
-    elif not isinstance(todo['completed'], bool):
-        return create_response(False, None, 400, "Completed status must be a boolean")
-    
-    # Remove any extra fields
-    valid_fields = required_fields + ['completed']
-    todo = {k: v for k, v in todo.items() if k in valid_fields}
-    
-    result = todos_collection.insert_one(todo)
-    todo['_id'] = str(result.inserted_id)
-    return create_response(True, todo, 201, "Todo created successfully")
-# Get all todos
+    try:
+        todo = Todo(**request.json).save()
+        return create_response(True, todo.to_dict(), 201, "Todo created successfully")
+    except ValidationError as e:
+        return create_response(False, None, 400, f"Invalid data: {e}")
+
 @app.route('/todos', methods=['GET'])
 def get_todos():
-    todos = list(todos_collection.find())
-    print(todos)
-    print(type(todos[0]))
-    todos = [{**todo, '_id': str(todo['_id'])} for todo in todos]
+    print(Todo.objects)
+    todos = [todo.to_dict() for todo in Todo.objects]
     return create_response(True, todos, 200, f"{len(todos)} todos retrieved successfully")
 
-# Get a specific todo
 @app.route('/todos/<todo_id>', methods=['GET'])
 def get_todo(todo_id):
     try:
-        todo = todos_collection.find_one({'_id': ObjectId(todo_id)})
-        if todo:
-            todo['_id'] = str(todo['_id'])
-            return create_response(True, todo, 200, "Todo retrieved successfully")
+        todo = Todo.objects.get(id=todo_id)
+        return create_response(True, todo.to_dict(), 200, "Todo retrieved successfully")
+    except DoesNotExist:
         return create_response(False, None, 404, "Todo not found")
-    except bson_errors.InvalidId:
+    except ValidationError:
         return create_response(False, None, 400, "Invalid todo ID")
 
-# Update a todo
 @app.route('/todos/<todo_id>', methods=['PUT'])
 def update_todo(todo_id):
-    try:
-        update_data = request.json
-        result = todos_collection.update_one({'_id': ObjectId(todo_id)}, {'$set': update_data})
-        print(result.modified_count)
-        if result.modified_count:
-            return create_response(True, None, 200, "Todo updated successfully")
-        return create_response(False, None, 200, "Todo already updated")
-    except bson_errors.InvalidId:
-        return create_response(False, None, 400, "Invalid todo ID")
+    if not request.is_json:
+        return create_response(False, None, 400, "Request must be JSON")
 
-# Delete a todo
+    if not request.json:
+        return create_response(False, None, 400, "Update data missing")
+
+    try:
+        todo = Todo.objects.get(id=todo_id)
+        todo.update(**request.json)
+        todo.reload()
+        return create_response(True, todo.to_dict(), 200, "Todo updated successfully")
+    except DoesNotExist:
+        return create_response(False, None, 404, "Todo not found")
+    except ValidationError as e:
+        return create_response(False, None, 400, f"Invalid data: {e}")
+
 @app.route('/todos/<todo_id>', methods=['DELETE'])
 def delete_todo(todo_id):
     try:
-        result = todos_collection.delete_one({'_id': ObjectId(todo_id)})
-        if result.deleted_count:
-            return create_response(True, None, 200, "Todo deleted successfully")
+        todo = Todo.objects.get(id=todo_id)
+        todo.delete()
+        return create_response(True, None, 200, "Todo deleted successfully")
+    except DoesNotExist:
         return create_response(False, None, 404, "Todo not found")
-    except bson_errors.InvalidId:
+    except ValidationError:
         return create_response(False, None, 400, "Invalid todo ID")
 
-# Error handler for 404 Not Found
 @app.errorhandler(404)
 def not_found(error):
     return create_response(False, None, 404, "Resource not found")
